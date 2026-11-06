@@ -3062,7 +3062,8 @@ class ChatViewModel(
                     _uiState.update { state ->
                         state.copy(
                             messages =
-                                state.messages.filterNot { it.id == reservation.pending.id }
+                                state.messages
+                                    .filterNot { it.id == reservation.pending.id }
                                     .excludingStagedRevert(state),
                             pendingAttachments = reservation.pending.attachments + state.pendingAttachments,
                             composerTextToRestore = reservation.pending.text,
@@ -4077,7 +4078,8 @@ class ChatViewModel(
                         _uiState.update { state ->
                             state.copy(
                                 messages =
-                                    state.messages.filterNot { it.id == msgToPersist.id }
+                                    state.messages
+                                        .filterNot { it.id == msgToPersist.id }
                                         .excludingStagedRevert(state),
                                 pendingAttachments = attachments + state.pendingAttachments,
                                 composerTextToRestore = msgToPersist.content,
