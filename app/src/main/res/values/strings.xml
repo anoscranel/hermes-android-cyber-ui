@@ -342,6 +342,8 @@
     <string name="chat_msg_retry_no_prompt">No earlier prompt found for this reply</string>
     <string name="chat_msg_revert_prefilled">Prompt returned to the composer; history is unchanged (the server has no per-message truncate)</string>
     <string name="chat_msg_revert_no_prompt">No earlier prompt found to restore</string>
+    <string name="chat_staged_revert_banner">Reverting — editing earlier message</string>
+    <string name="chat_staged_revert_cancel_desc">Cancel revert</string>
     <string name="chat_msg_fork_title">Fork conversation</string>
     <string name="chat_msg_fork_from_here">Fork from this message</string>
     <string name="chat_msg_fork_from_here_note">Branches the whole conversation — the server has no per-message fork anchor.</string>

@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -253,13 +253,14 @@ internal fun FullBleedAgentMessage(
                         modifier = Modifier.size(28.dp).testTag("fullbleed_speak"),
                     ) {
                         Icon(
-                            // Batch-9 F2: GraphicEq distinguishes the response
-                            // TTS toggle from the text_to_speech tool glyph.
+                            // Batch-10 G3: speaker for the idle speak trigger
+                            // (theta's pick; reverts batch-9's GraphicEq).
+                            // Icons.Filled.Stop while speaking is unchanged.
                             imageVector =
                                 if (isSpeaking) {
                                     Icons.Filled.Stop
                                 } else {
-                                    Icons.Rounded.GraphicEq
+                                    Icons.AutoMirrored.Filled.VolumeUp
                                 },
                             contentDescription =
                                 stringResource(

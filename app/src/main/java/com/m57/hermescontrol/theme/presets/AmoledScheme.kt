@@ -18,10 +18,17 @@ private val AmoledContainerHighest = Color(0xFF262626) // surfaceContainerHighes
 private val AmoledOutline = Color(0xFF808080)
 private val AmoledOutlineVariant = Color(0xFF404040)
 private val AmoledTextDim = Color(0xFFB3B3B3) // onSurfaceVariant
-private val AmoledTextBright = Color(0xFFFFFFFF) // pure white — max contrast on black; primary, error, text
-private val AmoledSecondary = Color(0xFFCCCCCC) // secondary accent + warning
-private val AmoledTertiary = Color(0xFF999999) // tertiary accent + success
-private val AmoledInfo = Color(0xFF808080) // info — same value as outline, distinct role
+private val AmoledTextBright = Color(0xFFFFFFFF) // pure white — max contrast on black; primary, text
+private val AmoledSecondary = Color(0xFFCCCCCC) // secondary accent
+private val AmoledTertiary = Color(0xFF999999) // tertiary accent
+
+// Batch-10 G5: hued semantic status — the same desaturated hue family as
+// MonochromeTheme's dark ramp (see MonochromeScheme.kt), so both true-black
+// presets read status identically.
+private val AmoledStatusGreen = Color(0xFF6FAF7E) // success
+private val AmoledStatusAmber = Color(0xFFAF9F6F) // warning
+private val AmoledStatusRed = Color(0xFFAF716F) // error
+private val AmoledStatusBlue = Color(0xFF6F8FAF) // info
 private val AmoledInversePrimary = Color(0xFF121212) // dark tone on the (light, fallback) inverseSurface
 
 /**
@@ -33,9 +40,9 @@ private val AmoledInversePrimary = Color(0xFF121212) // dark tone on the (light,
  * (a light AMOLED theme is a contradiction); the dispatcher falls back
  * to the default theme.
  *
- * Same accessibility note as MonochromeTheme: status colors are pure
- * grayscale, separated only by lightness, so don't rely on them alone
- * to convey success/warning/error/info — pair with an icon or label.
+ * Status colors (batch-10 G5) share MonochromeTheme's HUED semantic set —
+ * surfaces stay true-black grayscale; success/warning/error/info read by
+ * hue (still desaturated; pair with an icon or label where possible).
  */
 val AmoledTheme =
     buildThemeDarkOnly(
@@ -86,17 +93,17 @@ val AmoledTheme =
                 scrim = Color.Black,
                 status =
                     HermesStatusColors(
-                        success = AmoledTertiary,
+                        success = AmoledStatusGreen,
                         successContainer = AmoledContainerHigh,
                         onSuccess = AmoledFloor,
-                        warning = AmoledSecondary,
+                        warning = AmoledStatusAmber,
                         warningContainer = AmoledContainerHigh,
                         onWarning = AmoledFloor,
-                        error = AmoledTextBright,
+                        error = AmoledStatusRed,
                         errorContainer = AmoledContainerHigh,
                         onError = AmoledFloor,
                         onErrorContainer = AmoledTextBright,
-                        info = AmoledInfo,
+                        info = AmoledStatusBlue,
                         infoContainer = AmoledContainerHigh,
                         onInfo = AmoledFloor,
                     ),

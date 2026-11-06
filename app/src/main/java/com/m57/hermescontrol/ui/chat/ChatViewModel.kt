@@ -332,6 +332,16 @@ data class ChatUiState(
     /** Set ONLY by revert (batch-9 F5): the prefill should also focus the composer + open the keyboard. */
     val pendingPrefillFocus: Boolean = false,
     /**
+     * Batch-10 G2: staged revert state while the user ChatGPT-edits an
+     * earlier message. Non-null from revert until cancel or a session
+     * switch; while set, message-ingestion sites drop
+     * [StagedRevert.removedIds] so the locally removed tail cannot
+     * reappear through streaming, sync merges, reconnect hydration or
+     * tool upserts (batch-9's bare truncation was undone by the WS sync
+     * merge).
+     */
+    val stagedRevert: StagedRevert? = null,
+    /**
      * UI-only per-message display overrides (batch-8 F1 — the Edit action):
      * messageId → replacement thinking/response text. Render-side only,
      * applied in TranscriptUiState.resolve; the gateway exposes no
@@ -366,12 +376,37 @@ data class ChatUiState(
 }
 
 /**
- * Batch-9 F5 revert planning (pure, unit-tested in ChatRevertStateTest):
- * the ChatGPT-visual state after tapping Revert on [messageId] — messages
- * truncated to the rows BEFORE the tapped one (user AND assistant rows
- * alike), the recovered prompt staged in the composer, and the focus flag
- * that auto-opens the keyboard. Null when the id is unknown or no
- * recoverable prompt exists (NO_PROMPT).
+ * Batch-10 G2: durable staged state for the ChatGPT-visual revert. While
+ * set, every message-ingestion site drops [removedIds] (see
+ * [excludingStagedRevert]) so streaming appends, sync merges, reconnect
+ * hydration and tool upserts cannot resurrect the locally removed tail —
+ * batch-9's bare truncation was undone by the WS sync merge
+ * (applyCompressedHistory). [prefillText] mirrors the composer prefill of
+ * the staged edit; cleared only by cancel or a session switch.
+ */
+data class StagedRevert(
+    val removedMessages: List<ChatMessage>,
+    val removedIds: Set<String>,
+    val prefillText: String,
+    /**
+     * Ids of the timeline rows that existed BEFORE the removed tail at
+     * staging time. Cancel re-inserts the tail BEFORE the first current
+     * message not in this set, so a post-revert send's new turn stays
+     * chronologically after the restored tail (batch-10 G2 follow-up:
+     * plain append inverted the order when cancel happened after a send).
+     */
+    val headIds: Set<String> = emptySet(),
+)
+
+/**
+ * Batch-9 F5 revert planning (pure, unit-tested in ChatRevertStateTest),
+ * extended by batch-10 G2: the ChatGPT-visual state after tapping Revert
+ * on [messageId] — messages truncated to the rows BEFORE the tapped one
+ * (user AND assistant rows alike), the recovered prompt staged in the
+ * composer, the focus flag that auto-opens the keyboard, and (G2) the
+ * removed tail staged in [ChatUiState.stagedRevert] so it stays gone
+ * until cancel. Null when the id is unknown or no recoverable prompt
+ * exists (NO_PROMPT).
  */
 internal fun ChatUiState.revertedTo(messageId: String): ChatUiState? {
     val index = messages.indexOfFirst { it.id == messageId }
@@ -387,11 +422,63 @@ internal fun ChatUiState.revertedTo(messageId: String): ChatUiState? {
                 ?.content
         }
     if (promptText.isNullOrBlank()) return null
+    val removed = messages.subList(index, messages.size)
+    val priorStaged = stagedRevert
     return copy(
         messages = messages.subList(0, index),
+        // Second revert while staged: the newly removed rows chronologically
+        // PRECEDE the previously removed tail, so they go first (merge below).
+        stagedRevert =
+            StagedRevert(
+                removedMessages = removed + priorStaged?.removedMessages.orEmpty(),
+                removedIds = removed.map { it.id }.toSet() + priorStaged?.removedIds.orEmpty(),
+                prefillText = promptText,
+                headIds =
+                    messages.subList(0, index).map { it.id }.toSet() +
+                        priorStaged?.headIds.orEmpty(),
+            ),
         pendingPrefillText = promptText,
         pendingPrefillFocus = true,
     )
+}
+
+/**
+ * Batch-10 G2 cancel planning (pure, unit-tested in ChatRevertStateTest):
+ * re-inserts the staged removed tail at its ORIGINAL position — before the
+ * first current message that did not exist at staging time ([StagedRevert.headIds])
+ * — so a cancel after a post-revert send keeps chronology (new turn stays
+ * after the restored tail). Falls back to a plain append when every current
+ * row predates the staging (the common case). Clears the staged state and
+ * the composer prefill. Deliberately NOT run through [excludingStagedRevert] —
+ * the restore path must return the removed rows verbatim. Returns `this`
+ * when nothing is staged.
+ */
+internal fun ChatUiState.cancelledStagedRevert(): ChatUiState {
+    val staged = stagedRevert ?: return this
+    val insertBefore =
+        messages.indexOfFirst { it.id !in staged.headIds }.takeIf { it >= 0 } ?: messages.size
+    return copy(
+        messages =
+            messages.subList(0, insertBefore) +
+                staged.removedMessages +
+                messages.subList(insertBefore, messages.size),
+        stagedRevert = null,
+        pendingPrefillText = null,
+        pendingPrefillFocus = false,
+    )
+}
+
+/**
+ * Batch-10 G2 ingestion guard: drops messages whose id is staged for
+ * removal. Applied at every `messages =` mutation site that appends,
+ * merges, re-sets or rolls back the list, so the server transcript's tail
+ * cannot flow back into the visible timeline while a revert is staged.
+ * Returns the list unchanged when nothing is staged.
+ */
+internal fun List<ChatMessage>.excludingStagedRevert(state: ChatUiState): List<ChatMessage> {
+    val removedIds = state.stagedRevert?.removedIds ?: return this
+    if (removedIds.isEmpty()) return this
+    return filterNot { it.id in removedIds }
 }
 
 data class ChatTimelineState(
@@ -2900,7 +2987,7 @@ class ChatViewModel(
                             } else {
                                 state.messages + stagedMessage
                             }
-                        state.copy(messages = messages, isSending = true)
+                        state.copy(messages = messages.excludingStagedRevert(state), isSending = true)
                     }
                     true
                 } != true
@@ -2974,7 +3061,9 @@ class ChatViewModel(
                 if (reservation.originalPending == null) {
                     _uiState.update { state ->
                         state.copy(
-                            messages = state.messages.filterNot { it.id == reservation.pending.id },
+                            messages =
+                                state.messages.filterNot { it.id == reservation.pending.id }
+                                    .excludingStagedRevert(state),
                             pendingAttachments = reservation.pending.attachments + state.pendingAttachments,
                             composerTextToRestore = reservation.pending.text,
                             errorMessage =
@@ -3137,7 +3226,9 @@ class ChatViewModel(
 
     private fun removeUnconfirmedBubble(messageId: String) {
         val row = _uiState.value.messages.firstOrNull { it.id == messageId && it.canonicalRestId == null } ?: return
-        _uiState.update { state -> state.copy(messages = state.messages.filterNot { it.id == row.id }) }
+        _uiState.update { state ->
+            state.copy(messages = state.messages.filterNot { it.id == row.id }.excludingStagedRevert(state))
+        }
         viewModelScope.launch(ioDispatcher) { repo.deleteMessage(row.id) }
     }
 
@@ -3626,7 +3717,7 @@ class ChatViewModel(
 
         _uiState.update { state ->
             state.copy(
-                messages = state.messages + userMessage,
+                messages = (state.messages + userMessage).excludingStagedRevert(state),
                 isSending = true,
             )
         }
@@ -3985,7 +4076,9 @@ class ChatViewModel(
                     if (isCurrentSendContext(owner)) {
                         _uiState.update { state ->
                             state.copy(
-                                messages = state.messages.filterNot { it.id == msgToPersist.id },
+                                messages =
+                                    state.messages.filterNot { it.id == msgToPersist.id }
+                                        .excludingStagedRevert(state),
                                 pendingAttachments = attachments + state.pendingAttachments,
                                 composerTextToRestore = msgToPersist.content,
                                 errorMessage = "Failed to save message",
@@ -4195,7 +4288,7 @@ class ChatViewModel(
         removePendingSend(message.id)
         _uiState.update { state ->
             state.copy(
-                messages = state.messages.filterNot { it.id == message.id },
+                messages = state.messages.filterNot { it.id == message.id }.excludingStagedRevert(state),
                 pendingAttachments = attachments + state.pendingAttachments,
                 composerTextToRestore = message.content,
                 errorMessage = attachmentTooLargeMessage(attachment),
@@ -4813,7 +4906,7 @@ class ChatViewModel(
                 _uiState.update { state ->
                     placed = message.withLocalTranscriptAnchor(state.messages)
                     sessionId = state.currentSessionId
-                    state.copy(messages = state.messages + placed)
+                    state.copy(messages = (state.messages + placed).excludingStagedRevert(state))
                 }
                 val capturedMessage = placed
                 val capturedSessionId = sessionId
@@ -5011,7 +5104,11 @@ class ChatViewModel(
                                                 message
                                             }
                                         }
-                                    state.copy(messages = replacement + (visibleLocals + retained).distinctBy { it.id })
+                                    state.copy(
+                                        messages =
+                                            (replacement + (visibleLocals + retained).distinctBy { it.id })
+                                                .excludingStagedRevert(state),
+                                    )
                                 }
                             }
                         }
@@ -5201,12 +5298,27 @@ class ChatViewModel(
      * message's own text for user rows; the prompt that produced this reply
      * for assistant rows) with the keyboard auto-open flag. The server
      * transcript stays intact; reopening the session restores it — accepted
-     * per theta's explicit ask for ChatGPT-visual behavior.
+     * per theta's explicit ask for ChatGPT-visual behavior. Batch-10 G2
+     * makes the truncation DURABLE: the removed ids stay filtered at every
+     * ingestion site (see [StagedRevert]) until cancel or a session switch.
      */
     fun revertToMessage(messageId: String): MessageRevertResult {
         val next = _uiState.value.revertedTo(messageId) ?: return MessageRevertResult.NO_PROMPT
         _uiState.update { next }
         return MessageRevertResult.PREFILLED
+    }
+
+    /**
+     * Batch-10 G2: abandon the staged revert — the locally removed tail is
+     * restored verbatim (see [cancelledStagedRevert]) and the staged state
+     * plus composer prefill are cleared. The composer draft itself is
+     * UI-owned: ChatScreen's cancel wiring clears the text field and hides
+     * the keyboard alongside this call. Staged state also survives SEND on
+     * purpose (ChatGPT parity: the new turn appends after the truncated
+     * point); only cancel or a session switch clear it.
+     */
+    fun cancelStagedRevert() {
+        _uiState.update { it.cancelledStagedRevert() }
     }
 
     /** Bulk pin toggle target for the model picker selection mode (batch-8 F2). */
@@ -6139,7 +6251,14 @@ class ChatViewModel(
             var applied = false
             _uiState.update { current ->
                 applied = isCurrent() && current.messages === snapshot.messages && current.todos === snapshot.todos
-                if (applied) current.copy(messages = computed.second, todos = computed.third) else current
+                if (applied) {
+                    current.copy(
+                        messages = computed.second.excludingStagedRevert(current),
+                        todos = computed.third,
+                    )
+                } else {
+                    current
+                }
             }
             if (applied) {
                 ChatImageDiagnostics.history(snapshot.messages, computed.first, computed.second, cached)
@@ -6437,7 +6556,9 @@ class ChatViewModel(
                 isStreaming = false,
                 finishTimestamp = System.currentTimeMillis(),
             )
-        _uiState.update { it.copy(messages = (it.messages + finalized).dedupeById()) }
+        _uiState.update {
+            it.copy(messages = (it.messages + finalized).dedupeById().excludingStagedRevert(it))
+        }
         val sid = _uiState.value.currentSessionId
         if (sid != null) {
             viewModelScope.launch(ioDispatcher) {
@@ -6544,6 +6665,7 @@ class ChatViewModel(
                 isResumeRetrying = false,
                 pendingPrefillText = null,
                 pendingPrefillFocus = false,
+                stagedRevert = null,
                 messageDisplayOverrides = emptyMap(),
                 stagedProject = null,
                 sessionProjectId = null,
@@ -7564,7 +7686,7 @@ class ChatViewModel(
         val msg = ChatMessage(role = MessageRole.SYSTEM, content = text)
         val sessionId = _uiState.value.currentSessionId
 
-        _uiState.update { it.copy(messages = it.messages + msg) }
+        _uiState.update { it.copy(messages = (it.messages + msg).excludingStagedRevert(it)) }
 
         // Persist — OUTSIDE update{}
         if (persist && sessionId != null) {

@@ -953,71 +953,120 @@ fun ChatScreen(
             LaunchedEffect(state.isConnected, state.hasConversation) {
                 if (state.isConnected && !state.hasConversation) viewModel.loadStartableProjects()
             }
-            if (!state.hasConversation && !timelineState.isHistorical) {
-                ProjectPickerChip(
-                    projects = state.startableProjects,
-                    selected = state.stagedProject,
-                    onSelect = viewModel::selectStagedProject,
-                )
-            } else {
-                val sessionProject =
-                    remember(state.sessionProjectId, state.stagedProject, state.startableProjects) {
-                        state.startableProjects.firstOrNull { it.id == state.sessionProjectId }
-                            ?: state.stagedProject
-                    }
-                var showMoveSheet by remember { mutableStateOf(false) }
-                if (state.startableProjects.isNotEmpty() && !timelineState.isHistorical) {
-                    ProjectBadge(
-                        project = sessionProject,
-                        onLongClick = { showMoveSheet = true },
+            // Batch-10 G4: one backdrop for the whole pre-composer zone —
+            // workspace badge/picker row, TpsChip/ContextMeterRing row,
+            // PendingSendRecovery and the staged-revert cancel row — painted
+            // with the composer card's own container token
+            // (ComposerPalette: card = surfaceContainer), so this strip no
+            // longer renders as a raw `background` band above the chatbox in
+            // any preset. Paddings/spacings and the FAB anchor (message-list
+            // Box above) are unchanged; no border, no elevation.
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainer),
+            ) {
+                if (!state.hasConversation && !timelineState.isHistorical) {
+                    ProjectPickerChip(
+                        projects = state.startableProjects,
+                        selected = state.stagedProject,
+                        onSelect = viewModel::selectStagedProject,
                     )
                 } else {
-                    sessionProject?.let { ProjectBadge(it) }
+                    val sessionProject =
+                        remember(state.sessionProjectId, state.stagedProject, state.startableProjects) {
+                            state.startableProjects.firstOrNull { it.id == state.sessionProjectId }
+                                ?: state.stagedProject
+                        }
+                    var showMoveSheet by remember { mutableStateOf(false) }
+                    if (state.startableProjects.isNotEmpty() && !timelineState.isHistorical) {
+                        ProjectBadge(
+                            project = sessionProject,
+                            onLongClick = { showMoveSheet = true },
+                        )
+                    } else {
+                        sessionProject?.let { ProjectBadge(it) }
+                    }
+                    if (showMoveSheet) {
+                        ProjectPickerSheet(
+                            title = stringResource(R.string.chat_project_move_title),
+                            projects = state.startableProjects,
+                            selected = sessionProject,
+                            allowDefault = false,
+                            onSelect = { it?.let(viewModel::moveSessionToProject) },
+                            onDismiss = { showMoveSheet = false },
+                        )
+                    }
                 }
-                if (showMoveSheet) {
-                    ProjectPickerSheet(
-                        title = stringResource(R.string.chat_project_move_title),
-                        projects = state.startableProjects,
-                        selected = sessionProject,
-                        allowDefault = false,
-                        onSelect = { it?.let(viewModel::moveSessionToProject) },
-                        onDismiss = { showMoveSheet = false },
+
+                // Context-window meter: circular fill ring at the right edge above
+                // the composer, with the rolling tokens/sec chip to its left. Tap
+                // the ring opens the context detail sheet (same as the old bar).
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TpsChip(tps = state.latestTps)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    ContextMeterRing(
+                        usedTokens = state.usedContextTokens,
+                        fullTokens = state.fullContextTokens,
+                        onClick = {
+                            showContextSheet = true
+                            viewModel.fetchSessionDetailBreakdown()
+                        },
                     )
                 }
-            }
 
-            // Context-window meter: circular fill ring at the right edge above
-            // the composer, with the rolling tokens/sec chip to its left. Tap
-            // the ring opens the context detail sheet (same as the old bar).
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TpsChip(tps = state.latestTps)
-                Spacer(modifier = Modifier.width(8.dp))
-                ContextMeterRing(
-                    usedTokens = state.usedContextTokens,
-                    fullTokens = state.fullContextTokens,
-                    onClick = {
-                        showContextSheet = true
-                        viewModel.fetchSessionDetailBreakdown()
-                    },
-                )
-            }
+                if (!timelineState.isHistorical) {
+                    PendingSendRecovery(
+                        sends = state.pendingSends,
+                        canSend = state.isConnected && state.isSessionReady,
+                        mainTurnBusy = state.isMainTurnBusy,
+                        onSendAgain = viewModel::sendQueuedNow,
+                        onDiscard = viewModel::discardPendingSend,
+                        onAcknowledge = viewModel::acknowledgePendingSend,
+                        onRemoveAcknowledged = viewModel::removeAcknowledgedPendingSend,
+                        onOpenAttachment = viewModel::openAttachment,
+                        onImageClick = { viewingImage = it },
+                    )
+                }
 
-            if (!timelineState.isHistorical) {
-                PendingSendRecovery(
-                    sends = state.pendingSends,
-                    canSend = state.isConnected && state.isSessionReady,
-                    mainTurnBusy = state.isMainTurnBusy,
-                    onSendAgain = viewModel::sendQueuedNow,
-                    onDiscard = viewModel::discardPendingSend,
-                    onAcknowledge = viewModel::acknowledgePendingSend,
-                    onRemoveAcknowledged = viewModel::removeAcknowledgedPendingSend,
-                    onOpenAttachment = viewModel::openAttachment,
-                    onImageClick = { viewingImage = it },
-                )
+                // Batch-10 G2: while a revert is staged, a slim banner with a
+                // cancel X sits directly above the composer card. Cancel restores
+                // the removed tail in the ViewModel; the composer draft and the
+                // keyboard are UI-owned, so they are cleared/hidden here.
+                if (!timelineState.isHistorical && state.stagedRevert != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.chat_staged_revert_banner),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(
+                            onClick = {
+                                viewModel.cancelStagedRevert()
+                                inputState.clearText()
+                                softwareKeyboardController?.hide()
+                            },
+                            modifier = Modifier.size(28.dp).testTag("staged_revert_cancel"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = stringResource(R.string.chat_staged_revert_cancel_desc),
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
 
             ChatInputBar(
