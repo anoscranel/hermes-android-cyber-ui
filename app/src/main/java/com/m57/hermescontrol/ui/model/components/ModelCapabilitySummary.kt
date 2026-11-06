@@ -17,10 +17,10 @@ fun ModelCapabilitySummary(capabilities: ModelCapabilities?) {
     // capabilities tint success (matching CapabilityToggle's on-state),
     // negatives and neutral specs stay onSurfaceVariant.
     val labels =
-        buildList {
-            capabilities.supports_tools?.let { add(if (it) "Tools" else "No tools" to it) }
-            capabilities.supports_vision?.let { add(if (it) "Vision" else "No vision" to it) }
-            capabilities.reasoningSupport?.let { add(if (it) "Reasoning" else "no reasoning" to it) }
+        buildList<Pair<String, Boolean>> {
+            capabilities.supports_tools?.let { add((if (it) "Tools" else "No tools") to it) }
+            capabilities.supports_vision?.let { add((if (it) "Vision" else "No vision") to it) }
+            capabilities.reasoningSupport?.let { add((if (it) "Reasoning" else "no reasoning") to it) }
             if (capabilities.reasoningSupport == true && capabilities.can_disable_reasoning == false) {
                 add("reasoning always on" to true)
             }
