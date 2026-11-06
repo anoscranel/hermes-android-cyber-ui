@@ -185,7 +185,7 @@ val MonochromeTheme =
                         onErrorContainer = MonoLightTextBright,
                         info = MonoLightStatusBlue,
                         infoContainer = MonoLightContainerHigh,
-                        onInfo = MonoLightTextBright,
+                        onInfo = MonoLightBg,
                     ),
             ),
     )
