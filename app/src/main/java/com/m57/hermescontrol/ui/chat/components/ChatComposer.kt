@@ -152,6 +152,12 @@ fun ChatInputBar(
     onStopGeneration: () -> Unit = {},
     receiveContentListener: ReceiveContentListener? = null,
     isReceivingContent: Boolean = false,
+    /**
+     * External focus control (batch-9 F5): a FocusRequester applied next to
+     * the composer's internal one so revert-prefill can focus the field +
+     * open the keyboard. Null = no external focus wiring.
+     */
+    composerFocusRequester: FocusRequester? = null,
     /** Session overflow menu content, anchored inside the composer toolbar's
      * own overflow button (batch-7 W1). Empty lambda = no menu. */
     overflowMenu: @Composable BoxScope.() -> Unit = {},
@@ -455,6 +461,15 @@ fun ChatInputBar(
                                         .then(
                                             if (receiveContentListener != null) {
                                                 Modifier.contentReceiver(receiveContentListener)
+                                            } else {
+                                                Modifier
+                                            },
+                                        ).then(
+                                            // Batch-9 F5: revert-prefill focus rides the
+                                            // same field — chained requesters are fine,
+                                            // each points at this BasicTextField.
+                                            if (composerFocusRequester != null) {
+                                                Modifier.focusRequester(composerFocusRequester)
                                             } else {
                                                 Modifier
                                             },

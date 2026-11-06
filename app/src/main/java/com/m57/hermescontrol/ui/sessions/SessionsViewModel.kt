@@ -1050,6 +1050,58 @@ class SessionsViewModel(
         }
     }
 
+    /**
+     * Apply one explicit pinned state to every selected session (batch-9 F4),
+     * mirroring [setArchivedSelected]: per-id PATCH /api/sessions/{id}
+     * ({pinned}) — the same call as the single-row [togglePin]. Selection
+     * resets, then invalidate + reload; pinned rows re-sort to the top of
+     * the list (the backend back-fills pins into page 1 on every load).
+     */
+    fun setPinnedSelected(pinned: Boolean) {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            var failures = 0
+            ids.forEach { sessionId ->
+                val result =
+                    safeApiCall {
+                        ApiClient.hermesApi.setSessionPinned(
+                            sessionId = sessionId,
+                            body = SessionRenameRequest(pinned = pinned),
+                        )
+                    }
+                if (result is NetworkResult.Failure) failures++
+            }
+            val moved = ids.size - failures
+            _uiState.update {
+                it.copy(
+                    isSelecting = false,
+                    selectedIds = emptySet(),
+                    toastMessage =
+                        when {
+                            failures == ids.size -> {
+                                "Pin update failed"
+                            }
+
+                            failures > 0 -> {
+                                "$moved session(s) updated, $failures failed"
+                            }
+
+                            pinned -> {
+                                "Pinned $moved session(s)"
+                            }
+
+                            else -> {
+                                "Unpinned $moved session(s)"
+                            }
+                        },
+                )
+            }
+            invalidateListCache()
+            loadSessions()
+        }
+    }
+
     private fun listKey(
         section: HistorySection,
         archived: Boolean = _uiState.value.showArchived,

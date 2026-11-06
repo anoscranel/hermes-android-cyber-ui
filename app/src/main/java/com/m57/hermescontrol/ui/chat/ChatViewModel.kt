@@ -329,6 +329,8 @@ data class ChatUiState(
     val isResumeRetrying: Boolean = false,
     /** Text staged to prefill the composer (e.g. from /undo). */
     val pendingPrefillText: String? = null,
+    /** Set ONLY by revert (batch-9 F5): the prefill should also focus the composer + open the keyboard. */
+    val pendingPrefillFocus: Boolean = false,
     /**
      * UI-only per-message display overrides (batch-8 F1 — the Edit action):
      * messageId → replacement thinking/response text. Render-side only,
@@ -361,6 +363,35 @@ data class ChatUiState(
      * (review, PR #1250).
      */
     val canInterrupt: Boolean get() = isAgentTyping && isSessionReady
+}
+
+/**
+ * Batch-9 F5 revert planning (pure, unit-tested in ChatRevertStateTest):
+ * the ChatGPT-visual state after tapping Revert on [messageId] — messages
+ * truncated to the rows BEFORE the tapped one (user AND assistant rows
+ * alike), the recovered prompt staged in the composer, and the focus flag
+ * that auto-opens the keyboard. Null when the id is unknown or no
+ * recoverable prompt exists (NO_PROMPT).
+ */
+internal fun ChatUiState.revertedTo(messageId: String): ChatUiState? {
+    val index = messages.indexOfFirst { it.id == messageId }
+    if (index < 0) return null
+    val message = messages[index]
+    val promptText =
+        if (message.isUserTurnBoundary()) {
+            message.content
+        } else {
+            messages
+                .subList(0, index)
+                .lastOrNull { it.isUserTurnBoundary() }
+                ?.content
+        }
+    if (promptText.isNullOrBlank()) return null
+    return copy(
+        messages = messages.subList(0, index),
+        pendingPrefillText = promptText,
+        pendingPrefillFocus = true,
+    )
 }
 
 data class ChatTimelineState(
@@ -5089,7 +5120,7 @@ class ChatViewModel(
     }
 
     fun consumePendingPrefill() {
-        _uiState.update { it.copy(pendingPrefillText = null) }
+        _uiState.update { it.copy(pendingPrefillText = null, pendingPrefillFocus = false) }
     }
 
     // ── Per-message action bar (batch-8 F1) ──────────────────────────────
@@ -5160,31 +5191,21 @@ class ChatViewModel(
     }
 
     /**
-     * "Revert" for one message (batch-8 F1). CLIENT-SIDE ONLY: the gateway's
-     * WS surface (WsMethods) exposes NO per-message truncate/delete-from-here
-     * RPC — `/undo` rewinds whole turns via command.dispatch and the branch
-     * RPCs anchor nothing — so revert cannot cut the transcript server-side.
-     * What it does: takes the USER prompt text back into the composer as a
-     * draft (the tapped message's own text for user rows; the prompt that
-     * produced this reply for assistant rows) so it can be edited and resent.
-     * The server transcript stays as-is; the UI tells the user via toast.
+     * "Revert" for one message (batch-8 F1; ChatGPT semantics since batch-9
+     * F5). CLIENT-SIDE ONLY: the gateway's WS surface (WsMethods) exposes NO
+     * per-message truncate/delete-from-here RPC — `/undo` is turn-based via
+     * command.dispatch — so revert cannot cut the transcript server-side.
+     * What it does: truncates the LOCAL timeline to the rows before the
+     * tapped one (user AND assistant rows alike — see [revertedTo]), then
+     * stages the recovered prompt back into the composer (the tapped
+     * message's own text for user rows; the prompt that produced this reply
+     * for assistant rows) with the keyboard auto-open flag. The server
+     * transcript stays intact; reopening the session restores it — accepted
+     * per theta's explicit ask for ChatGPT-visual behavior.
      */
     fun revertToMessage(messageId: String): MessageRevertResult {
-        val snapshot = _uiState.value
-        val index = snapshot.messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return MessageRevertResult.NO_PROMPT
-        val message = snapshot.messages[index]
-        val promptText =
-            if (message.isUserTurnBoundary()) {
-                message.content
-            } else {
-                snapshot.messages
-                    .subList(0, index)
-                    .lastOrNull { it.isUserTurnBoundary() }
-                    ?.content
-            }
-        if (promptText.isNullOrBlank()) return MessageRevertResult.NO_PROMPT
-        _uiState.update { it.copy(pendingPrefillText = promptText) }
+        val next = _uiState.value.revertedTo(messageId) ?: return MessageRevertResult.NO_PROMPT
+        _uiState.update { next }
         return MessageRevertResult.PREFILLED
     }
 
@@ -6522,6 +6543,7 @@ class ChatViewModel(
                 resumeError = null,
                 isResumeRetrying = false,
                 pendingPrefillText = null,
+                pendingPrefillFocus = false,
                 messageDisplayOverrides = emptyMap(),
                 stagedProject = null,
                 sessionProjectId = null,

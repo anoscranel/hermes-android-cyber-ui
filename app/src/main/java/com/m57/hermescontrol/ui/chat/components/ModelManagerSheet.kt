@@ -45,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -753,6 +754,9 @@ private fun CapabilityToggle(
     onChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Batch-9 F7: on-state reads as "enabled" — success track + on-success
+    // thumb; off-state keeps M3 neutral defaults.
+    val statusColors = LocalHermesStatusColors.current
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.Center,
@@ -761,13 +765,23 @@ private fun CapabilityToggle(
         Text(
             text = glyph,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color =
+                if (checked) {
+                    statusColors.success
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
             maxLines = 1,
             softWrap = false,
         )
         Switch(
             checked = checked,
             onCheckedChange = onChange,
+            colors =
+                SwitchDefaults.colors(
+                    checkedThumbColor = statusColors.onSuccess,
+                    checkedTrackColor = statusColors.success,
+                ),
             modifier =
                 Modifier
                     .scale(0.62f)

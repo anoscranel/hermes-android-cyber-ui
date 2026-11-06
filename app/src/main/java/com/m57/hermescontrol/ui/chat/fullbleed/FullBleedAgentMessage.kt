@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,13 +67,15 @@ import kotlinx.coroutines.launch
  * is only used for ASSISTANT messages.
  *
  * Batch-8 F1: double-tap anywhere (the outer combinedClickable) copies the
- * full text — thinking + response — with a toast; [messageActions] adds the
- * per-message action row below the footer. Save-as-image captures ONLY the
- * reasoning + prose column via a recorded graphics layer (the action row
- * and the copy/stat footer are excluded on purpose). CAVEAT: in turns whose
- * reasoning was hoisted to the turn header (issue #866 reason-above-tools),
- * this bubble renders with `showReasoning = false` and the captured image
- * contains the response only.
+ * message; since batch-9 F3 that is ONLY the response text (reasoning
+ * remains copyable via the ReasoningCard long-press) with a toast;
+ * [messageActions] adds the per-message action row below the footer.
+ * Save-as-image captures ONLY the reasoning + prose column via a recorded
+ * graphics layer (the action row and the copy/stat footer are excluded on
+ * purpose). CAVEAT: in turns whose reasoning was hoisted to the turn
+ * header (issue #866 reason-above-tools), this bubble renders with
+ * `showReasoning = false` and the captured image contains the response
+ * only.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -109,16 +111,11 @@ internal fun FullBleedAgentMessage(
     val captureLayer = rememberGraphicsLayer()
     val copiedToast = stringResource(R.string.chat_msg_copied_to_clipboard)
 
-    // Full-text copy: thinking (if any) + response, used by double-tap.
+    // Batch-9 F3: double-tap copies ONLY the response text. Reasoning stays
+    // copyable via the ReasoningCard long-press, so no prepend branch here.
     val copyFullText = {
-        val fullText =
-            if (message.reasoningText.isBlank()) {
-                message.content
-            } else {
-                "Thinking:\n${message.reasoningText}\n\n${message.content}"
-            }
         scope.launch {
-            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, fullText)))
+            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, message.content)))
         }
         Toast.makeText(context, copiedToast, Toast.LENGTH_SHORT).show()
     }
@@ -256,11 +253,13 @@ internal fun FullBleedAgentMessage(
                         modifier = Modifier.size(28.dp).testTag("fullbleed_speak"),
                     ) {
                         Icon(
+                            // Batch-9 F2: GraphicEq distinguishes the response
+                            // TTS toggle from the text_to_speech tool glyph.
                             imageVector =
                                 if (isSpeaking) {
                                     Icons.Filled.Stop
                                 } else {
-                                    Icons.AutoMirrored.Filled.VolumeUp
+                                    Icons.Rounded.GraphicEq
                                 },
                             contentDescription =
                                 stringResource(

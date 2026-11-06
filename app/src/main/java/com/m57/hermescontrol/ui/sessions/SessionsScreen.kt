@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -462,8 +463,9 @@ fun SessionsScreen(
         // Batch-6 F4 (selection parity with the bottom sheet): while selecting,
         // the top bar swaps to [Close | "<n> selected" | bulk actions]. Bulk ops
         // route through the same ViewModel paths as the sheet — the backend bulk
-        // delete op, and per-id archive/unarchive via setArchivedSelected, which
-        // runs invalidate+reload itself so unarchived rows reappear in the main
+        // delete op, and per-id archive/unarchive via setArchivedSelected or
+        // pin/unpin via setPinnedSelected (batch-9 F4), which run
+        // invalidate+reload themselves so unarchived rows reappear in the main
         // list.
         title = {
             if (state.isSelecting) {
@@ -487,6 +489,35 @@ fun SessionsScreen(
         onRefresh = { viewModel.loadSessions(forceRefresh = true) },
         actions = {
             if (state.isSelecting) {
+                // Batch-9 F4: deterministic bulk pin — unpin only when EVERY
+                // selected row is already pinned, else pin all (ChatGPT-style).
+                val allSelectedPinned =
+                    state.selectedIds.all { id ->
+                        state.sessions.any { it.id == id && it.pinned == true }
+                    }
+                val pinAction = !allSelectedPinned
+                IconButton(
+                    onClick = { viewModel.setPinnedSelected(pinAction) },
+                    enabled = hasSelection,
+                    modifier = Modifier.testTag("sessions_screen_selection_pin"),
+                ) {
+                    Icon(
+                        imageVector =
+                            if (pinAction) {
+                                Icons.Outlined.PushPin
+                            } else {
+                                Icons.Filled.PushPin
+                            },
+                        contentDescription =
+                            stringResource(
+                                if (pinAction) {
+                                    R.string.sessions_sheet_selection_pin
+                                } else {
+                                    R.string.sessions_sheet_selection_unpin
+                                },
+                            ),
+                    )
+                }
                 if (state.showArchived) {
                     IconButton(
                         onClick = { viewModel.setArchivedSelected(false) },

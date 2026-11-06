@@ -15,6 +15,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,8 +67,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -416,11 +419,20 @@ fun ChatScreen(
         }
     }
     val inputState = rememberTextFieldState()
+    // Batch-9 F5: revert prefill focuses the composer and opens the keyboard
+    // (ChatGPT parity) — pendingPrefillFocus is set ONLY by revertToMessage,
+    // so fork/other prefill flows keep their no-keyboard behavior.
+    val composerFocusRequester = remember { FocusRequester() }
+    val softwareKeyboardController = LocalSoftwareKeyboardController.current
 
     LaunchedEffect(state.pendingPrefillText) {
         val prefill = state.pendingPrefillText
         if (prefill != null) {
             inputState.replaceComposerDraft(prefill)
+            if (state.pendingPrefillFocus) {
+                composerFocusRequester.requestFocus()
+                softwareKeyboardController?.show()
+            }
             viewModel.consumePendingPrefill()
         }
     }
@@ -622,22 +634,40 @@ fun ChatScreen(
         actions = {
             // Temporary Chat Mode (batch-5B B3): mints a session whose row is
             // deleted the moment the user leaves it. Toggling OFF lands on a
-            // fresh normal session. Glyph (batch-7 W7): the custom TempChatIcon
-            // — a ChatGPT-style dashed speech bubble. The tint marks state.
+            // fresh normal session. Chrome (batch-9 F1): a circular 36dp
+            // button — ghost outline when OFF (a surfaceVariant fill is
+            // invisible on the surface top bar, so the border carries the
+            // shape in BOTH themes), filled primaryContainer when ON; the
+            // glyph is the circle-split-by-horizontal-gap TempChatIcon.
             IconButton(
                 onClick = viewModel::toggleTemporaryChat,
                 modifier = Modifier.testTag("temp_chat_button"),
             ) {
-                Icon(
-                    imageVector = TempChatIcon,
-                    contentDescription = stringResource(R.string.chat_temp_chat_desc),
-                    tint =
-                        if (state.isTemporaryChat) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                )
+                Box(
+                    modifier =
+                        Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .then(
+                                if (state.isTemporaryChat) {
+                                    Modifier.background(MaterialTheme.colorScheme.primaryContainer)
+                                } else {
+                                    Modifier.border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                                },
+                            ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = TempChatIcon,
+                        contentDescription = stringResource(R.string.chat_temp_chat_desc),
+                        tint =
+                            if (state.isTemporaryChat) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                    )
+                }
             }
 
             // Connection profiles — same navigation mechanism as the drawer,
@@ -823,17 +853,23 @@ fun ChatScreen(
                                 scrollScope.launch { snackbarHostState.showSnackbar(context.getString(feedback)) }
                             },
                             onRevertMessage = { message ->
-                                val feedback =
-                                    when (viewModel.revertToMessage(message.id)) {
-                                        ChatViewModel.MessageRevertResult.PREFILLED -> {
-                                            R.string.chat_msg_revert_prefilled
-                                        }
-
-                                        ChatViewModel.MessageRevertResult.NO_PROMPT -> {
-                                            R.string.chat_msg_revert_no_prompt
+                                // Batch-9 F5: the vanish + prefill + keyboard
+                                // IS the feedback — no PREFILLED snackbar
+                                // (ChatGPT shows none). NO_PROMPT still toasts:
+                                // silently doing nothing would read as a bug.
+                                when (viewModel.revertToMessage(message.id)) {
+                                    ChatViewModel.MessageRevertResult.NO_PROMPT -> {
+                                        scrollScope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                context.getString(R.string.chat_msg_revert_no_prompt),
+                                            )
                                         }
                                     }
-                                scrollScope.launch { snackbarHostState.showSnackbar(context.getString(feedback)) }
+
+                                    ChatViewModel.MessageRevertResult.PREFILLED -> {
+                                        // Vanish + prefill + keyboard — no toast.
+                                    }
+                                }
                             },
                         ),
                     searchState = searchState,
@@ -986,6 +1022,8 @@ fun ChatScreen(
 
             ChatInputBar(
                 inputState = inputState,
+                // Batch-9 F5: revert prefill focuses this composer.
+                composerFocusRequester = composerFocusRequester,
                 receiveContentListener = imagePaste,
                 isReceivingContent = imagePaste.isReceiving,
                 onSend = {

@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
@@ -223,10 +224,18 @@ fun SessionsSheet(
             if (uiState.isSelecting) {
                 // Selection mode replaces the toolbar wholesale (by design):
                 // leading cross exits, then "<n> selected", then bulk actions.
+                // Batch-9 F4: deterministic bulk pin — unpin only when EVERY
+                // selected row is already pinned, else pin all.
+                val allSelectedPinned =
+                    uiState.selectedIds.all { id ->
+                        uiState.sessions.any { it.id == id && it.pinned == true }
+                    }
                 SessionsSheetSelectionBar(
                     selectedCount = uiState.selectedIds.size,
                     archivedView = archivedOnly,
+                    pinAction = !allSelectedPinned,
                     onExit = { viewModel.toggleSelecting() },
+                    onPin = { viewModel.setPinnedSelected(!allSelectedPinned) },
                     onArchive = { viewModel.setArchivedSelected(true) },
                     onUnarchive = { viewModel.setArchivedSelected(false) },
                     onDelete = { viewModel.requestBulkDelete() },
@@ -447,13 +456,17 @@ private fun SessionsSheetToolbar(
  * selecting): leading cross exits mode, then the "<n> selected" count, then the
  * bulk actions. Bulk ops route through the same ViewModel paths as the row
  * gestures — delete goes through the backend bulk-delete op (with the confirm
- * dialog); archive/unarchive apply the per-id PATCH to every selected id.
+ * dialog); pin/unpin (batch-9 F4) and archive/unarchive apply the per-id PATCH
+ * to every selected id.
  */
 @Composable
 private fun SessionsSheetSelectionBar(
     selectedCount: Int,
     archivedView: Boolean,
+    /** Batch-9 F4: true when the button's action is PIN; false = UNPIN. */
+    pinAction: Boolean,
     onExit: () -> Unit,
+    onPin: () -> Unit,
     onArchive: () -> Unit,
     onUnarchive: () -> Unit,
     onDelete: () -> Unit,
@@ -478,6 +491,30 @@ private fun SessionsSheetSelectionBar(
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.weight(1f).padding(start = 4.dp),
         )
+        IconButton(
+            onClick = onPin,
+            enabled = hasSelection,
+            modifier = Modifier.testTag("sessions_sheet_selection_pin"),
+        ) {
+            Icon(
+                // Batch-9 F4: outlined pin = the action pins; filled pin =
+                // all selected are pinned, the action unpins.
+                imageVector =
+                    if (pinAction) {
+                        Icons.Outlined.PushPin
+                    } else {
+                        Icons.Filled.PushPin
+                    },
+                contentDescription =
+                    stringResource(
+                        if (pinAction) {
+                            R.string.sessions_sheet_selection_pin
+                        } else {
+                            R.string.sessions_sheet_selection_unpin
+                        },
+                    ),
+            )
+        }
         if (archivedView) {
             IconButton(
                 onClick = onUnarchive,

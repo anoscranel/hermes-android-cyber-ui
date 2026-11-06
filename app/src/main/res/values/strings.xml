@@ -1634,6 +1634,8 @@
     <string name="sessions_sheet_selection_delete">Delete selected sessions</string>
     <string name="sessions_sheet_selection_archive">Archive selected sessions</string>
     <string name="sessions_sheet_selection_unarchive">Unarchive selected sessions</string>
+    <string name="sessions_sheet_selection_pin">Pin</string>
+    <string name="sessions_sheet_selection_unpin">Unpin</string>
     <string name="chat_open_model_manager">Manage models</string>
     <string name="chat_new_chat">New chat</string>
     <string name="chat_overflow_menu_desc">More options</string>

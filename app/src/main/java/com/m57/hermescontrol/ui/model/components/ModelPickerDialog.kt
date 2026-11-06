@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -197,7 +196,9 @@ fun ModelPickerDialog(
             }
         },
         text = {
-            Column {
+            // Batch-9 F6: the full-screen dialog's text slot must size itself
+            // or the list keeps its old 420dp dead zone below.
+            Column(modifier = Modifier.fillMaxSize()) {
                 if (isLoading && providers.isEmpty() && pinnedModels.isEmpty()) {
                     LoadingState(
                         subtitle = stringResource(R.string.model_picker_loading),
@@ -290,8 +291,11 @@ fun ModelPickerDialog(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // Batch-9 F6: fill all remaining height (M3 wraps the text
+                    // slot in a weighted Box, so the column gets bounded max
+                    // height); the list scrolls the whole catalog.
                     LazyColumn(
-                        modifier = Modifier.heightIn(max = 420.dp),
+                        modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         if (archivedView) {
