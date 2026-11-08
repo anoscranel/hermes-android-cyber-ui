@@ -23,13 +23,17 @@ private val MonoDarkSecondary = Color(0xFFCCCCCC) // secondary accent
 private val MonoDarkTertiary = Color(0xFF999999) // tertiary accent
 
 // Batch-10 G5: hued semantic status colors — desaturated (~28% saturation,
-// ~56% lightness, one shared tone family) so they sit inside the grayscale
-// ramp yet read unmistakably as green/amber/red/blue. Surfaces stay mono;
-// only status gains hue (policy comment at the theme val).
-private val MonoDarkStatusGreen = Color(0xFF6FAF7E) // success
-private val MonoDarkStatusAmber = Color(0xFFAF9F6F) // warning
-private val MonoDarkStatusRed = Color(0xFFAF716F) // error
-private val MonoDarkStatusBlue = Color(0xFF6F8FAF) // info
+// one shared tone family) so they sit inside the grayscale ramp yet read
+// unmistakably as green/amber/red/blue. Surfaces stay mono; only status gains
+// hue (policy comment at the theme val). Batch-11 H6: the fills were one step
+// too dark in dark mode (theta, round 3) — they now sit at ~78% lightness,
+// which both reads brighter on the near-black ramp and raises every badge
+// pair (fill vs MonoDarkBg #121212) to >= 9.4:1. Light-mode tokens below are
+// deliberately unchanged: they sit on near-white and must stay dark.
+private val MonoDarkStatusGreen = Color(0xFF9BD8A8) // success
+private val MonoDarkStatusAmber = Color(0xFFDFCF9A) // warning
+private val MonoDarkStatusRed = Color(0xFFE5A9A5) // error
+private val MonoDarkStatusBlue = Color(0xFFA8C6E3) // info
 
 // ---------------------------------------------------------------------
 // Monochrome Light — the same ramp, inverted

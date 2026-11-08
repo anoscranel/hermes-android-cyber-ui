@@ -857,11 +857,21 @@ fun ChatScreen(
                                 // IS the feedback — no PREFILLED snackbar
                                 // (ChatGPT shows none). NO_PROMPT still toasts:
                                 // silently doing nothing would read as a bug.
+                                // Batch-11 H5: BUSY while a reply streams (the
+                                // send-time undo would race the live turn).
                                 when (viewModel.revertToMessage(message.id)) {
                                     ChatViewModel.MessageRevertResult.NO_PROMPT -> {
                                         scrollScope.launch {
                                             snackbarHostState.showSnackbar(
                                                 context.getString(R.string.chat_msg_revert_no_prompt),
+                                            )
+                                        }
+                                    }
+
+                                    ChatViewModel.MessageRevertResult.BUSY -> {
+                                        scrollScope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                context.getString(R.string.chat_msg_revert_busy),
                                             )
                                         }
                                     }
@@ -953,267 +963,276 @@ fun ChatScreen(
             LaunchedEffect(state.isConnected, state.hasConversation) {
                 if (state.isConnected && !state.hasConversation) viewModel.loadStartableProjects()
             }
-            // Batch-10 G4: one backdrop for the whole pre-composer zone —
-            // workspace badge/picker row, TpsChip/ContextMeterRing row,
-            // PendingSendRecovery and the staged-revert cancel row — painted
-            // with the composer card's own container token
-            // (ComposerPalette: card = surfaceContainer), so this strip no
-            // longer renders as a raw `background` band above the chatbox in
-            // any preset. Paddings/spacings and the FAB anchor (message-list
-            // Box above) are unchanged; no border, no elevation.
+            // Batch-11 H3: ONE painted container for the whole bottom stack —
+            // the workspace/meter/pending/cancel zone (batch-10 G4's wrapper)
+            // AND the ChatInputBar. Painting only the wrapper left the
+            // composer card's outer padding (its root Box sits inside that
+            // 12dp/8dp padding) showing the raw `background`, which reads as a
+            // black bar in Monochrome/AMOLED dark. One `surfaceContainer`
+            // region now runs from the top of the badge zone to the bottom
+            // edge of the content area: ChatScreen ignores HermesScaffold's
+            // navigationBars PaddingValues, and imePadding lives on the root
+            // Column above, so nothing unpainted sits below this Column.
+            // Paddings/spacings unchanged; no border, no elevation; the FAB
+            // anchor (message-list Box above) is untouched.
             Column(
                 modifier =
                     Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surfaceContainer),
             ) {
-                if (!state.hasConversation && !timelineState.isHistorical) {
-                    ProjectPickerChip(
-                        projects = state.startableProjects,
-                        selected = state.stagedProject,
-                        onSelect = viewModel::selectStagedProject,
-                    )
-                } else {
-                    val sessionProject =
-                        remember(state.sessionProjectId, state.stagedProject, state.startableProjects) {
-                            state.startableProjects.firstOrNull { it.id == state.sessionProjectId }
-                                ?: state.stagedProject
-                        }
-                    var showMoveSheet by remember { mutableStateOf(false) }
-                    if (state.startableProjects.isNotEmpty() && !timelineState.isHistorical) {
-                        ProjectBadge(
-                            project = sessionProject,
-                            onLongClick = { showMoveSheet = true },
+                // Structure only: batch-10 G4's wrapper keeps its children
+                // grouped and their paddings identical, but its background
+                // moved up to the outer Column.
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (!state.hasConversation && !timelineState.isHistorical) {
+                        ProjectPickerChip(
+                            projects = state.startableProjects,
+                            selected = state.stagedProject,
+                            onSelect = viewModel::selectStagedProject,
                         )
                     } else {
-                        sessionProject?.let { ProjectBadge(it) }
-                    }
-                    if (showMoveSheet) {
-                        ProjectPickerSheet(
-                            title = stringResource(R.string.chat_project_move_title),
-                            projects = state.startableProjects,
-                            selected = sessionProject,
-                            allowDefault = false,
-                            onSelect = { it?.let(viewModel::moveSessionToProject) },
-                            onDismiss = { showMoveSheet = false },
-                        )
-                    }
-                }
-
-                // Context-window meter: circular fill ring at the right edge above
-                // the composer, with the rolling tokens/sec chip to its left. Tap
-                // the ring opens the context detail sheet (same as the old bar).
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TpsChip(tps = state.latestTps)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    ContextMeterRing(
-                        usedTokens = state.usedContextTokens,
-                        fullTokens = state.fullContextTokens,
-                        onClick = {
-                            showContextSheet = true
-                            viewModel.fetchSessionDetailBreakdown()
-                        },
-                    )
-                }
-
-                if (!timelineState.isHistorical) {
-                    PendingSendRecovery(
-                        sends = state.pendingSends,
-                        canSend = state.isConnected && state.isSessionReady,
-                        mainTurnBusy = state.isMainTurnBusy,
-                        onSendAgain = viewModel::sendQueuedNow,
-                        onDiscard = viewModel::discardPendingSend,
-                        onAcknowledge = viewModel::acknowledgePendingSend,
-                        onRemoveAcknowledged = viewModel::removeAcknowledgedPendingSend,
-                        onOpenAttachment = viewModel::openAttachment,
-                        onImageClick = { viewingImage = it },
-                    )
-                }
-
-                // Batch-10 G2: while a revert is staged, a slim banner with a
-                // cancel X sits directly above the composer card. Cancel restores
-                // the removed tail in the ViewModel; the composer draft and the
-                // keyboard are UI-owned, so they are cleared/hidden here.
-                if (!timelineState.isHistorical && state.stagedRevert != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stringResource(R.string.chat_staged_revert_banner),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(
-                            onClick = {
-                                viewModel.cancelStagedRevert()
-                                inputState.clearText()
-                                softwareKeyboardController?.hide()
-                            },
-                            modifier = Modifier.size(28.dp).testTag("staged_revert_cancel"),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = stringResource(R.string.chat_staged_revert_cancel_desc),
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        val sessionProject =
+                            remember(state.sessionProjectId, state.stagedProject, state.startableProjects) {
+                                state.startableProjects.firstOrNull { it.id == state.sessionProjectId }
+                                    ?: state.stagedProject
+                            }
+                        var showMoveSheet by remember { mutableStateOf(false) }
+                        if (state.startableProjects.isNotEmpty() && !timelineState.isHistorical) {
+                            ProjectBadge(
+                                project = sessionProject,
+                                onLongClick = { showMoveSheet = true },
+                            )
+                        } else {
+                            sessionProject?.let { ProjectBadge(it) }
+                        }
+                        if (showMoveSheet) {
+                            ProjectPickerSheet(
+                                title = stringResource(R.string.chat_project_move_title),
+                                projects = state.startableProjects,
+                                selected = sessionProject,
+                                allowDefault = false,
+                                onSelect = { it?.let(viewModel::moveSessionToProject) },
+                                onDismiss = { showMoveSheet = false },
                             )
                         }
                     }
-                }
-            }
 
-            ChatInputBar(
-                inputState = inputState,
-                // Batch-9 F5: revert prefill focuses this composer.
-                composerFocusRequester = composerFocusRequester,
-                receiveContentListener = imagePaste,
-                isReceivingContent = imagePaste.isReceiving,
-                onSend = {
-                    if (!imagePaste.isReceiving && viewModel.sendMessage(inputState.text.toString())) {
-                        inputState.clearText()
-                        // Jump only after an accepted send. A readiness race keeps the draft intact.
-                        scrollController.jumpToBottom(animated = true)
-                    }
-                },
-                onMicTap = mediaLaunchers.onMicTap,
-                onMicHoldStart = mediaLaunchers.onMicHoldStart,
-                onMicHoldEnd = mediaLaunchers.onMicHoldEnd,
-                onMicHoldCancel = mediaLaunchers.onMicHoldCancel,
-                onMicLock = mediaLaunchers.onMicLock,
-                isListening = mediaLaunchers.isListening || state.isTranscribingVoiceNote,
-                isRecordingVoice = mediaLaunchers.isRecordingVoice,
-                isVoiceNoteLocked = mediaLaunchers.isVoiceNoteLocked,
-                amplitudeProvider = mediaLaunchers.amplitudeProvider,
-                onStopGeneration = { viewModel.interruptSession() },
-                isAgentTyping = state.isAgentTyping,
-                canInterrupt = state.canInterrupt,
-                isConnected = state.isConnected,
-                isSessionReady = state.isSessionReady && !timelineState.isHistorical,
-                sessionPreparationFailed = state.resumeError != null,
-                commandCatalog = state.commandCatalog,
-                slashUsageCounts = state.slashUsageCounts,
-                pendingAttachments = state.pendingAttachments,
-                onCameraTap = mediaLaunchers.onCameraTap,
-                onImageTap = mediaLaunchers.onImageTap,
-                onFileTap = mediaLaunchers.onFileTap,
-                onRemoveAttachment = viewModel::removeAttachment,
-                onPreviewAttachment = { attachment ->
-                    if (attachment.isImage) {
-                        viewingImage =
-                            ImageViewerModel(
-                                model = attachment.uri,
-                                name = attachment.name,
-                                mimeType = attachment.mimeType,
-                            )
-                    }
-                },
-                // Composer toolbar wiring (PR 1)
-                currentSessionModel = state.currentSessionModel,
-                showModelProvider = state.showModelProvider,
-                reasoningLevel = state.reasoningLevel,
-                reasoningWireLevel = state.reasoningWireLevel,
-                pendingReasoningLevel = state.pendingReasoningLevel,
-                onModelTap = { viewModel.openModelPicker() },
-                onSessionsTap = { sessionsSheetSection = HistorySection.CONVERSATIONS },
-                onNewChatTap = { NavigationController.openNewChat() },
-                onOverflowTap = {
-                    settingsViewModel.refreshKeepConnectedInBackground()
-                    showSessionMenu = true
-                },
-                onModelManagerTap = { showModelManagerSheet = true },
-                onMediaModelsTap = { showMediaModelsSheet = true },
-                onSessionsLongPress = { sessionsSheetSection = HistorySection.AUTOMATIONS },
-                onSwipeUp = { sessionsSheetSection = HistorySection.CONVERSATIONS },
-                hasSessionActivity = hasSessionActivity,
-                onReasoningTap = { level -> viewModel.setReasoningLevel(level) },
-                canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
-                supportsReasoning = state.currentModelCapabilities?.reasoningSupport,
-                fastMode = state.fastMode,
-                fastSupported = state.currentModelCapabilities?.fast == true,
-                isFastModeChanging = state.isFastModeChanging,
-                onToggleFastMode = { viewModel.toggleFastMode() },
-                // Session actions overflow menu (issue #1091): content moved
-                // down from the top bar with batch-5B; batch-7 W1 moves the
-                // ANCHOR into the composer's overflow button itself — batch-5B
-                // anchored it to a bare sibling Box under the input bar, the
-                // phantom "black band above the composer" suspect.
-                overflowMenu = {
-                    DropdownMenu(
-                        expanded = showSessionMenu,
-                        onDismissRequest = { showSessionMenu = false },
+                    // Context-window meter: circular fill ring at the right edge above
+                    // the composer, with the rolling tokens/sec chip to its left. Tap
+                    // the ring opens the context detail sheet (same as the old bar).
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_action_timeline)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.History,
-                                    contentDescription = null,
-                                )
-                            },
-                            enabled = state.currentSessionId != null,
+                        TpsChip(tps = state.latestTps)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        ContextMeterRing(
+                            usedTokens = state.usedContextTokens,
+                            fullTokens = state.fullContextTokens,
                             onClick = {
-                                showSessionMenu = false
-                                viewModel.openTimeline()
+                                showContextSheet = true
+                                viewModel.fetchSessionDetailBreakdown()
                             },
-                            modifier = Modifier.testTag("chat_menu_timeline"),
-                        )
-
-                        // Chat search lives in this overflow menu (moved from the top bar)
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    stringResource(
-                                        if (searchState.isActive) {
-                                            R.string.chat_action_close_search
-                                        } else {
-                                            R.string.chat_action_search
-                                        },
-                                    ),
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector =
-                                        if (searchState.isActive) Icons.Filled.Close else Icons.Filled.Search,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                showSessionMenu = false
-                                viewModel.toggleSearch()
-                            },
-                            enabled = !timelineState.isHistorical,
-                            modifier = Modifier.testTag("chat_menu_search"),
-                        )
-
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.session_integrations_menu_item)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.Extension,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                showSessionMenu = false
-                                connectorsViewModel.show()
-                            },
-                            modifier = Modifier.testTag("chat_menu_session_integrations"),
-                        )
-                        ChatBackgroundConnectionMenuItem(
-                            checked = settingsState.keepConnectedInBackground,
-                            onToggle = settingsViewModel::onKeepConnectedInBackgroundChange,
                         )
                     }
-                },
-            )
+
+                    if (!timelineState.isHistorical) {
+                        PendingSendRecovery(
+                            sends = state.pendingSends,
+                            canSend = state.isConnected && state.isSessionReady,
+                            mainTurnBusy = state.isMainTurnBusy,
+                            onSendAgain = viewModel::sendQueuedNow,
+                            onDiscard = viewModel::discardPendingSend,
+                            onAcknowledge = viewModel::acknowledgePendingSend,
+                            onRemoveAcknowledged = viewModel::removeAcknowledgedPendingSend,
+                            onOpenAttachment = viewModel::openAttachment,
+                            onImageClick = { viewingImage = it },
+                        )
+                    }
+
+                    // Batch-10 G2: while a revert is staged, a slim banner with a
+                    // cancel X sits directly above the composer card. Cancel restores
+                    // the removed tail in the ViewModel; the composer draft and the
+                    // keyboard are UI-owned, so they are cleared/hidden here.
+                    if (!timelineState.isHistorical && state.stagedRevert != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.chat_staged_revert_banner),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = {
+                                    viewModel.cancelStagedRevert()
+                                    inputState.clearText()
+                                    softwareKeyboardController?.hide()
+                                },
+                                modifier = Modifier.size(28.dp).testTag("staged_revert_cancel"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = stringResource(R.string.chat_staged_revert_cancel_desc),
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                ChatInputBar(
+                    inputState = inputState,
+                    // Batch-9 F5: revert prefill focuses this composer.
+                    composerFocusRequester = composerFocusRequester,
+                    receiveContentListener = imagePaste,
+                    isReceivingContent = imagePaste.isReceiving,
+                    onSend = {
+                        if (!imagePaste.isReceiving && viewModel.sendMessage(inputState.text.toString())) {
+                            inputState.clearText()
+                            // Jump only after an accepted send. A readiness race keeps the draft intact.
+                            scrollController.jumpToBottom(animated = true)
+                        }
+                    },
+                    onMicTap = mediaLaunchers.onMicTap,
+                    onMicHoldStart = mediaLaunchers.onMicHoldStart,
+                    onMicHoldEnd = mediaLaunchers.onMicHoldEnd,
+                    onMicHoldCancel = mediaLaunchers.onMicHoldCancel,
+                    onMicLock = mediaLaunchers.onMicLock,
+                    isListening = mediaLaunchers.isListening || state.isTranscribingVoiceNote,
+                    isRecordingVoice = mediaLaunchers.isRecordingVoice,
+                    isVoiceNoteLocked = mediaLaunchers.isVoiceNoteLocked,
+                    amplitudeProvider = mediaLaunchers.amplitudeProvider,
+                    onStopGeneration = { viewModel.interruptSession() },
+                    isAgentTyping = state.isAgentTyping,
+                    canInterrupt = state.canInterrupt,
+                    isConnected = state.isConnected,
+                    isSessionReady = state.isSessionReady && !timelineState.isHistorical,
+                    sessionPreparationFailed = state.resumeError != null,
+                    commandCatalog = state.commandCatalog,
+                    slashUsageCounts = state.slashUsageCounts,
+                    pendingAttachments = state.pendingAttachments,
+                    onCameraTap = mediaLaunchers.onCameraTap,
+                    onImageTap = mediaLaunchers.onImageTap,
+                    onFileTap = mediaLaunchers.onFileTap,
+                    onRemoveAttachment = viewModel::removeAttachment,
+                    onPreviewAttachment = { attachment ->
+                        if (attachment.isImage) {
+                            viewingImage =
+                                ImageViewerModel(
+                                    model = attachment.uri,
+                                    name = attachment.name,
+                                    mimeType = attachment.mimeType,
+                                )
+                        }
+                    },
+                    // Composer toolbar wiring (PR 1)
+                    currentSessionModel = state.currentSessionModel,
+                    showModelProvider = state.showModelProvider,
+                    reasoningLevel = state.reasoningLevel,
+                    reasoningWireLevel = state.reasoningWireLevel,
+                    pendingReasoningLevel = state.pendingReasoningLevel,
+                    onModelTap = { viewModel.openModelPicker() },
+                    onSessionsTap = { sessionsSheetSection = HistorySection.CONVERSATIONS },
+                    onNewChatTap = { NavigationController.openNewChat() },
+                    onOverflowTap = {
+                        settingsViewModel.refreshKeepConnectedInBackground()
+                        showSessionMenu = true
+                    },
+                    onModelManagerTap = { showModelManagerSheet = true },
+                    onMediaModelsTap = { showMediaModelsSheet = true },
+                    onSessionsLongPress = { sessionsSheetSection = HistorySection.AUTOMATIONS },
+                    onSwipeUp = { sessionsSheetSection = HistorySection.CONVERSATIONS },
+                    hasSessionActivity = hasSessionActivity,
+                    onReasoningTap = { level -> viewModel.setReasoningLevel(level) },
+                    canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
+                    supportsReasoning = state.currentModelCapabilities?.reasoningSupport,
+                    fastMode = state.fastMode,
+                    fastSupported = state.currentModelCapabilities?.fast == true,
+                    isFastModeChanging = state.isFastModeChanging,
+                    onToggleFastMode = { viewModel.toggleFastMode() },
+                    // Session actions overflow menu (issue #1091): content moved
+                    // down from the top bar with batch-5B; batch-7 W1 moves the
+                    // ANCHOR into the composer's overflow button itself — batch-5B
+                    // anchored it to a bare sibling Box under the input bar, the
+                    // phantom "black band above the composer" suspect.
+                    overflowMenu = {
+                        DropdownMenu(
+                            expanded = showSessionMenu,
+                            onDismissRequest = { showSessionMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_action_timeline)) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Filled.History,
+                                        contentDescription = null,
+                                    )
+                                },
+                                enabled = state.currentSessionId != null,
+                                onClick = {
+                                    showSessionMenu = false
+                                    viewModel.openTimeline()
+                                },
+                                modifier = Modifier.testTag("chat_menu_timeline"),
+                            )
+
+                            // Chat search lives in this overflow menu (moved from the top bar)
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        stringResource(
+                                            if (searchState.isActive) {
+                                                R.string.chat_action_close_search
+                                            } else {
+                                                R.string.chat_action_search
+                                            },
+                                        ),
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector =
+                                            if (searchState.isActive) Icons.Filled.Close else Icons.Filled.Search,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    showSessionMenu = false
+                                    viewModel.toggleSearch()
+                                },
+                                enabled = !timelineState.isHistorical,
+                                modifier = Modifier.testTag("chat_menu_search"),
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.session_integrations_menu_item)) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Filled.Extension,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    showSessionMenu = false
+                                    connectorsViewModel.show()
+                                },
+                                modifier = Modifier.testTag("chat_menu_session_integrations"),
+                            )
+                            ChatBackgroundConnectionMenuItem(
+                                checked = settingsState.keepConnectedInBackground,
+                                onToggle = settingsViewModel::onKeepConnectedInBackgroundChange,
+                            )
+                        }
+                    },
+                )
+            }
         }
 
         ChatTimelineSheet(

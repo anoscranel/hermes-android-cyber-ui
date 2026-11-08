@@ -10,12 +10,13 @@ import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.theme.IconDefaultFill
 
 /**
- * Temporary-chat glyph (batch-10 G1): a circle outline broken by THREE
- * strip gaps — top-left, top-right and bottom-middle — leaving three arc
- * segments, plus a small FILLED triangle at the bottom-left that points
- * into the circle: the speech-bubble tail notch. Reads as "a transient
- * chat". 24dp viewport; arcs use the IconDefaultFill stroke and the tail
- * an IconDefaultFill fill, so `Icon(tint = ...)` recolors both paths.
+ * Temporary-chat glyph (batch-10 G1, tail flipped outward in batch-11 H1):
+ * a circle outline broken by THREE strip gaps — top-left, top-right and
+ * bottom-middle — leaving three arc segments, plus a small FILLED triangle
+ * at the bottom-left that sits OUTSIDE the circle and points away from it:
+ * the speech-bubble tail. Reads as "a transient chat". 24dp viewport; arcs
+ * use the IconDefaultFill stroke and the tail an IconDefaultFill fill, so
+ * `Icon(tint = ...)` recolors both paths.
  */
 val TempChatIcon: ImageVector by lazy {
     ImageVector
@@ -71,7 +72,9 @@ val TempChatIcon: ImageVector by lazy {
 private const val PATH =
     "M17.03,4.54 A9,9 0 0 0 6.97,4.54 M4.54,6.97 A9,9 0 0 0 10.28,20.83 M13.72,20.83 A9,9 0 0 0 19.46,6.97"
 
-// Tail: filled triangle at the circle's bottom-left (~225°). Its base
-// chord sits ON the ring (215°/235°) and the apex points toward the
-// center, so the notch reads as cut into the ring (batch-10 G1).
-private const val TAIL = "M4.63,17.16 L8.82,15.18 L6.84,19.37 Z"
+// Tail: filled triangle OUTSIDE the circle at its bottom-left (apex along
+// 225°). Base chord ON the ring at 210°→240°, apex at r≈12 along 225°
+// (3.51,20.49) pointing AWAY from the center, so the glyph reads as a
+// bubble with its tail hanging off the ring (batch-11 H1 — batch-10 G1's
+// apex pointed inward and read as a notch cut into the ring).
+private const val TAIL = "M4.21,16.5 L7.5,19.79 L3.51,20.49 Z"

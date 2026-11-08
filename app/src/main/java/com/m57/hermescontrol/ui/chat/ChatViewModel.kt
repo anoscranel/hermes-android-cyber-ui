@@ -122,6 +122,14 @@ private const val VOICE_NOTE_FAILED_MESSAGE = "Voice note transcription failed"
 private const val VOICE_NOTE_UNSENT_MESSAGE =
     "Voice note not sent — transcript kept in the input field"
 
+// Batch-11 H5 — staged-revert send path (see ChatViewModel.sendAfterStagedRevert).
+private const val STAGED_REVERT_BUSY_MESSAGE =
+    "Wait for the current reply to finish before reverting"
+private const val STAGED_REVERT_FAILED_MESSAGE =
+    "Could not delete the reverted turns — nothing was sent"
+private const val STAGED_REVERT_SEND_FAILED_MESSAGE =
+    "The reverted turns were deleted, but the new message was not sent"
+
 private val REASONING_EFFORT_LEVELS =
     setOf("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
@@ -333,14 +341,23 @@ data class ChatUiState(
     val pendingPrefillFocus: Boolean = false,
     /**
      * Batch-10 G2: staged revert state while the user ChatGPT-edits an
-     * earlier message. Non-null from revert until cancel or a session
-     * switch; while set, message-ingestion sites drop
+     * earlier message. Non-null from revert until cancel, a session switch,
+     * or (batch-11 H5) the send-time `undo` that deletes the turns for real;
+     * while set, message-ingestion sites drop
      * [StagedRevert.removedIds] so the locally removed tail cannot
      * reappear through streaming, sync merges, reconnect hydration or
      * tool upserts (batch-9's bare truncation was undone by the WS sync
      * merge).
      */
     val stagedRevert: StagedRevert? = null,
+    /**
+     * Batch-11 H5: ids whose turns the gateway `undo` already deleted while
+     * sending out of a staged revert. They stay filtered out of every
+     * message-ingestion site (see [excludingStagedRevert]) until a history
+     * reload confirms server truth, so a stale sync merge landing right after
+     * the delete cannot resurrect them. Cleared on a session switch.
+     */
+    val serverDeletedIds: Set<String> = emptySet(),
     /**
      * UI-only per-message display overrides (batch-8 F1 — the Edit action):
      * messageId → replacement thinking/response text. Render-side only,
@@ -376,13 +393,13 @@ data class ChatUiState(
 }
 
 /**
- * Batch-10 G2: durable staged state for the ChatGPT-visual revert. While
- * set, every message-ingestion site drops [removedIds] (see
- * [excludingStagedRevert]) so streaming appends, sync merges, reconnect
- * hydration and tool upserts cannot resurrect the locally removed tail —
- * batch-9's bare truncation was undone by the WS sync merge
- * (applyCompressedHistory). [prefillText] mirrors the composer prefill of
- * the staged edit; cleared only by cancel or a session switch.
+ * Batch-10 G2: durable staged state for the ChatGPT revert. While set, every
+ * message-ingestion site drops [removedIds] (see [excludingStagedRevert]) so
+ * streaming appends, sync merges, reconnect hydration and tool upserts cannot
+ * resurrect the locally removed tail — batch-9's bare truncation was undone by
+ * the WS sync merge (applyCompressedHistory). [prefillText] mirrors the
+ * composer prefill of the staged edit; cleared by cancel, a session switch, or
+ * (batch-11 H5) by a successful send-time `undo` that deletes the turns.
  */
 data class StagedRevert(
     val removedMessages: List<ChatMessage>,
@@ -396,38 +413,54 @@ data class StagedRevert(
      * plain append inverted the order when cancel happened after a send).
      */
     val headIds: Set<String> = emptySet(),
+    /**
+     * Batch-11 H5: how many USER-turn boundaries the staged tail contains,
+     * counted from the target's own boundary to the end of the timeline.
+     * That is exactly the `turns` argument the gateway's
+     * `command.dispatch {name:"undo"}` needs at send time to delete the
+     * tapped turn plus every later turn server-side. A second revert while
+     * staged MERGES: the count is re-derived from the new (earlier) boundary
+     * plus the already-staged turns, so the dispatch still covers the whole
+     * merged tail.
+     */
+    val turnCount: Int = 0,
 )
 
 /**
  * Batch-9 F5 revert planning (pure, unit-tested in ChatRevertStateTest),
- * extended by batch-10 G2: the ChatGPT-visual state after tapping Revert
- * on [messageId] — messages truncated to the rows BEFORE the tapped one
- * (user AND assistant rows alike), the recovered prompt staged in the
- * composer, the focus flag that auto-opens the keyboard, and (G2) the
- * removed tail staged in [ChatUiState.stagedRevert] so it stays gone
- * until cancel. Null when the id is unknown or no recoverable prompt
- * exists (NO_PROMPT).
+ * extended by batch-10 G2 and batch-11 H5: the ChatGPT state after tapping
+ * Revert on [messageId] — messages truncated to the rows BEFORE the tapped
+ * one (user AND assistant rows alike), the recovered prompt staged in the
+ * composer, the focus flag that auto-opens the keyboard, and the removed
+ * tail staged in [ChatUiState.stagedRevert] so it stays gone until cancel.
+ * The staged [StagedRevert.turnCount] is the number of user turns the tail
+ * covers; SEND dispatches that many turns to the gateway's `undo`, so the
+ * deletion is REAL server-side (cancel before send deletes nothing). Null
+ * when the id is unknown or no recoverable prompt exists (NO_PROMPT).
  */
 internal fun ChatUiState.revertedTo(messageId: String): ChatUiState? {
     val index = messages.indexOfFirst { it.id == messageId }
     if (index < 0) return null
     val message = messages[index]
-    val promptText =
+    // The turn boundary a revert cuts at: the tapped row itself when it is a
+    // user boundary, otherwise the user prompt that produced it.
+    val boundaryIndex =
         if (message.isUserTurnBoundary()) {
-            message.content
+            index
         } else {
-            messages
-                .subList(0, index)
-                .lastOrNull { it.isUserTurnBoundary() }
-                ?.content
+            messages.subList(0, index).indexOfLast { it.isUserTurnBoundary() }
         }
-    if (promptText.isNullOrBlank()) return null
+    if (boundaryIndex < 0) return null
+    val promptText = messages[boundaryIndex].content
+    if (promptText.isBlank()) return null
     val removed = messages.subList(index, messages.size)
     val priorStaged = stagedRevert
     return copy(
         messages = messages.subList(0, index),
         // Second revert while staged: the newly removed rows chronologically
-        // PRECEDE the previously removed tail, so they go first (merge below).
+        // PRECEDE the previously removed tail, so they go first (merge below),
+        // and the turn count adds the already-staged turns (the server still
+        // holds them — nothing is deleted until send).
         stagedRevert =
             StagedRevert(
                 removedMessages = removed + priorStaged?.removedMessages.orEmpty(),
@@ -436,6 +469,9 @@ internal fun ChatUiState.revertedTo(messageId: String): ChatUiState? {
                 headIds =
                     messages.subList(0, index).map { it.id }.toSet() +
                         priorStaged?.headIds.orEmpty(),
+                turnCount =
+                    messages.subList(boundaryIndex, messages.size).count { it.isUserTurnBoundary() } +
+                        (priorStaged?.turnCount ?: 0),
             ),
         pendingPrefillText = promptText,
         pendingPrefillFocus = true,
@@ -469,16 +505,54 @@ internal fun ChatUiState.cancelledStagedRevert(): ChatUiState {
 }
 
 /**
- * Batch-10 G2 ingestion guard: drops messages whose id is staged for
- * removal. Applied at every `messages =` mutation site that appends,
+ * Batch-11 H5 success planning (pure, unit-tested in ChatRevertStateTest):
+ * the gateway `undo` deleted the staged turns, so the staged state is
+ * consumed for good — the tail is NOT restored locally (it no longer exists
+ * server-side), the composer prefill is cleared, and the removed ids move to
+ * [ChatUiState.serverDeletedIds] so the ingestion guard keeps dropping them
+ * until the post-undo history reload lands. Returns `this` when nothing is
+ * staged.
+ */
+internal fun ChatUiState.stagedUndoCompleted(): ChatUiState {
+    val staged = stagedRevert ?: return this
+    return copy(
+        stagedRevert = null,
+        serverDeletedIds = serverDeletedIds + staged.removedIds,
+        pendingPrefillText = null,
+        pendingPrefillFocus = false,
+    )
+}
+
+/**
+ * Batch-11 H5 failure planning (pure, unit-tested in ChatRevertStateTest):
+ * the undo dispatch failed, so the send is ABORTED — the staged revert stays
+ * exactly as it was (tail still hidden, cancel still available), the error is
+ * surfaced through the usual error snackbar, and the aborted prompt goes back
+ * into the composer so nothing is lost.
+ */
+internal fun ChatUiState.stagedUndoFailed(
+    error: String,
+    draft: String,
+): ChatUiState =
+    copy(
+        errorMessage = error,
+        pendingPrefillText = draft.takeIf { it.isNotBlank() },
+        pendingPrefillFocus = true,
+    )
+
+/**
+ * Batch-10 G2 ingestion guard, extended by batch-11 H5: drops messages whose
+ * id is staged for removal OR was already deleted server-side by the
+ * revert-send undo. Applied at every `messages =` mutation site that appends,
  * merges, re-sets or rolls back the list, so the server transcript's tail
  * cannot flow back into the visible timeline while a revert is staged.
- * Returns the list unchanged when nothing is staged.
+ * Returns the list unchanged when nothing is staged or deleted.
  */
 internal fun List<ChatMessage>.excludingStagedRevert(state: ChatUiState): List<ChatMessage> {
-    val removedIds = state.stagedRevert?.removedIds ?: return this
-    if (removedIds.isEmpty()) return this
-    return filterNot { it.id in removedIds }
+    val removedIds = state.stagedRevert?.removedIds ?: emptySet()
+    val deletedIds = state.serverDeletedIds
+    if (removedIds.isEmpty() && deletedIds.isEmpty()) return this
+    return filterNot { it.id in removedIds || it.id in deletedIds }
 }
 
 data class ChatTimelineState(
@@ -757,6 +831,13 @@ class ChatViewModel(
     private var lastMainCompletionAt = 0L
     private var lastSubmissionKey: String? = null
     private var lastSubmissionAt = 0L
+    /**
+     * Batch-11 H5: one revert-send at a time. Set while the gateway undo and
+     * the post-undo reload are in flight; a second tap on send while it is set
+     * is ignored (the composer's own dedupe alone cannot cover a gap of a
+     * network round-trip).
+     */
+    private var revertSending = false
     private var sessionGeneration = 0L
     private var scopeGeneration = 0L
     private var mainTurnEpoch = 0L
@@ -3576,6 +3657,24 @@ class ChatViewModel(
         text: String,
         modeOverride: BusySendMode? = null,
     ): Boolean {
+        // Batch-11 H5: a send while a revert is staged is a TRUE deletion —
+        // the gateway `undo` runs first (whole turns, server-side), then the
+        // new prompt goes out. Cancel before send deletes nothing.
+        val staged = _uiState.value.stagedRevert
+        if (staged != null) return sendAfterStagedRevert(staged, text, modeOverride)
+        return sendMessageNow(text, modeOverride)
+    }
+
+    /**
+     * The real send body behind [sendMessage] (batch-11 H5 split) — unchanged
+     * behavior: slash commands, oversized-attachment guard, submission
+     * dedupe, busy-mode selection, pending-send reservation, optimistic
+     * bubble, then prompt.submit.
+     */
+    private fun sendMessageNow(
+        text: String,
+        modeOverride: BusySendMode? = null,
+    ): Boolean {
         if (!canSubmitMessage()) return false
         if (text.isBlank() && _uiState.value.pendingAttachments.isEmpty()) return false
 
@@ -5025,6 +5124,117 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Batch-11 H5: send while a revert is staged. ChatGPT semantics — the
+     * deletion happens HERE, on SEND, not on the Revert tap:
+     *
+     * 1. guard: never undo while a turn is streaming (the undo would race the
+     *    live stream and archive the trailing turn under it) and never twice
+     *    ([revertSending]);
+     * 2. wait for the gateway `undo` of [StagedRevert.turnCount] turns —
+     *    [performUndoAwait], the same `command.dispatch` the `/undo` command
+     *    uses, which deletes whole turns server-side;
+     * 3. on success drop the staged state WITHOUT restoring the tail
+     *    ([stagedUndoCompleted]), reload history from server truth, then run
+     *    the normal send path ([sendMessageNow]) with the new prompt;
+     * 4. on failure ABORT the send: staged state and cancel-X stay, the error
+     *    goes out as the usual snackbar and the prompt returns to the composer
+     *    ([stagedUndoFailed]) so nothing is lost.
+     *
+     * A slash command is not a prompt, so it bypasses the undo and runs
+     * normally with the revert still staged. Multi-turn tails dispatch without
+     * a confirmation dialog by design — the user already confirmed intent by
+     * tapping Revert and then sending (the `/undo N` command keeps its dialog).
+     */
+    private fun sendAfterStagedRevert(
+        staged: StagedRevert,
+        text: String,
+        modeOverride: BusySendMode?,
+    ): Boolean {
+        val snapshot = _uiState.value
+        if (snapshot.isAgentTyping) {
+            _uiState.update { it.copy(errorMessage = STAGED_REVERT_BUSY_MESSAGE) }
+            return false
+        }
+        if (revertSending) return false
+        if (!canSubmitMessage()) return false
+        if (text.isBlank() && snapshot.pendingAttachments.isEmpty()) return false
+        val trimmed = text.trim()
+        if (trimmed.startsWith("/", ignoreCase = true)) return sendMessageNow(text, modeOverride)
+
+        revertSending = true
+        viewModelScope.launch {
+            try {
+                val deleted = withContext(ioDispatcher) { performUndoAwait(staged.turnCount) }
+                if (!deleted) {
+                    _uiState.update { it.stagedUndoFailed(STAGED_REVERT_FAILED_MESSAGE, text) }
+                    return@launch
+                }
+                _uiState.update { it.stagedUndoCompleted() }
+                // Awaited: appending the new prompt before server truth lands
+                // would race the reload's `messages = emptyList()`.
+                reloadAfterStagedUndo()
+                if (!sendMessageNow(text, modeOverride)) {
+                    _uiState.update {
+                        it.copy(
+                            errorMessage = STAGED_REVERT_SEND_FAILED_MESSAGE,
+                            pendingPrefillText = text.takeIf { draft -> draft.isNotBlank() },
+                            pendingPrefillFocus = true,
+                        )
+                    }
+                }
+            } finally {
+                // Held through the reload + send so a second tap cannot start a
+                // parallel undo (or slip a send under the reloading list).
+                revertSending = false
+            }
+        }
+        return true
+    }
+
+    /**
+     * Batch-11 H5: awaited variant of [performUndo] for the revert-send. Same
+     * `command.dispatch {name:"undo", arg:"<turns>", sessionId}` call; returns
+     * true only when the gateway accepted it, false on any failure (including
+     * "no runtime session"), and never throws — the caller decides whether to
+     * abort.
+     */
+    private suspend fun performUndoAwait(turns: Int): Boolean {
+        val sessionId = runtimeSessionId ?: return false
+        return try {
+            wsClient.call(
+                RpcMethods.COMMAND_DISPATCH,
+                CommandDispatchParams(name = "undo", arg = turns.toString(), sessionId = sessionId),
+            )
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Batch-11 H5: awaited history refresh after the revert-send undo. Mirrors
+     * the reload inside [handlePrefillResult] (clear the session cache, blank
+     * the visible list, re-hydrate, refresh context usage) but is JOINED, so
+     * the new prompt can only be appended after server truth landed — the
+     * un-joined undo response refresh would race the optimistic bubble.
+     * Deliberately silent: no "↶ Rewound" feedback row and no composer
+     * prefill, because the send that triggered the undo submits its own prompt
+     * and the delete is meant to be invisible (ChatGPT parity).
+     */
+    private suspend fun reloadAfterStagedUndo() {
+        val storageSessionId = _uiState.value.currentSessionId ?: return
+        val generation = sessionGeneration
+        withContext(ioDispatcher) {
+            repo.clearMessagesForSession(storageSessionId)
+        }
+        _uiState.update { it.copy(messages = emptyList()) }
+        loadSessionMessages(storageSessionId, generation).join()
+        fetchContextUsage()
+    }
+
     private fun compressSession(focusTopic: String) {
         val sessionId = _uiState.value.currentSessionId
         // Fix #1437: session.compress resolves a runtime ID, not the persisted history key.
@@ -5228,7 +5438,7 @@ class ChatViewModel(
     enum class MessageRetryResult { RESENT, BUSY, NO_PROMPT, NOT_SUBMITTED }
 
     /** Result of [revertToMessage]. */
-    enum class MessageRevertResult { PREFILLED, NO_PROMPT }
+    enum class MessageRevertResult { PREFILLED, BUSY, NO_PROMPT }
 
     /**
      * Writes or clears a UI-only display override for one message (the Edit
@@ -5291,20 +5501,26 @@ class ChatViewModel(
 
     /**
      * "Revert" for one message (batch-8 F1; ChatGPT semantics since batch-9
-     * F5). CLIENT-SIDE ONLY: the gateway's WS surface (WsMethods) exposes NO
-     * per-message truncate/delete-from-here RPC — `/undo` is turn-based via
-     * command.dispatch — so revert cannot cut the transcript server-side.
-     * What it does: truncates the LOCAL timeline to the rows before the
-     * tapped one (user AND assistant rows alike — see [revertedTo]), then
-     * stages the recovered prompt back into the composer (the tapped
-     * message's own text for user rows; the prompt that produced this reply
-     * for assistant rows) with the keyboard auto-open flag. The server
-     * transcript stays intact; reopening the session restores it — accepted
-     * per theta's explicit ask for ChatGPT-visual behavior. Batch-10 G2
-     * makes the truncation DURABLE: the removed ids stay filtered at every
-     * ingestion site (see [StagedRevert]) until cancel or a session switch.
+     * F5; TRUE deletion since batch-11 H5).
+     *
+     * Tap: truncates the LOCAL timeline to the rows before the tapped one
+     * (user AND assistant rows alike — see [revertedTo]), stages the removed
+     * tail ([StagedRevert]) and puts the recovered prompt back into the
+     * composer (the tapped message's own text for user rows; the prompt that
+     * produced this reply for assistant rows) with the keyboard auto-open
+     * flag. Nothing is deleted server-side yet.
+     *
+     * Send: the staged [StagedRevert.turnCount] turns are deleted server-side
+     * through the gateway `undo` command (the same `command.dispatch` the
+     * `/undo` command uses) BEFORE the new prompt is submitted — see
+     * [sendAfterStagedRevert]. Cancel before send deletes nothing
+     * ([cancelStagedRevert]).
+     *
+     * BUSY while a reply streams: a trailing-turn undo would race the live
+     * stream, so the tap is refused (same shape as [retryMessage]).
      */
     fun revertToMessage(messageId: String): MessageRevertResult {
+        if (_uiState.value.isAgentTyping) return MessageRevertResult.BUSY
         val next = _uiState.value.revertedTo(messageId) ?: return MessageRevertResult.NO_PROMPT
         _uiState.update { next }
         return MessageRevertResult.PREFILLED
@@ -5313,11 +5529,12 @@ class ChatViewModel(
     /**
      * Batch-10 G2: abandon the staged revert — the locally removed tail is
      * restored verbatim (see [cancelledStagedRevert]) and the staged state
-     * plus composer prefill are cleared. The composer draft itself is
-     * UI-owned: ChatScreen's cancel wiring clears the text field and hides
-     * the keyboard alongside this call. Staged state also survives SEND on
-     * purpose (ChatGPT parity: the new turn appends after the truncated
-     * point); only cancel or a session switch clear it.
+     * plus composer prefill are cleared. Nothing was deleted server-side, so
+     * cancel is always safe. The composer draft itself is UI-owned:
+     * ChatScreen's cancel wiring clears the text field and hides the keyboard
+     * alongside this call. Batch-11 H5: SEND consumes the staged state instead
+     * (the undo deletes the turns and the tail is gone for good); only cancel
+     * or a session switch restore it.
      */
     fun cancelStagedRevert() {
         _uiState.update { it.cancelledStagedRevert() }
@@ -6668,6 +6885,7 @@ class ChatViewModel(
                 pendingPrefillText = null,
                 pendingPrefillFocus = false,
                 stagedRevert = null,
+                serverDeletedIds = emptySet(),
                 messageDisplayOverrides = emptyMap(),
                 stagedProject = null,
                 sessionProjectId = null,

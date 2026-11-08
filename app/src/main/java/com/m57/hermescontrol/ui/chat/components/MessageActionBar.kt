@@ -5,11 +5,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallSplit
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.outlined.Create
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,11 +78,12 @@ fun ChatMessageActionsRow(
         }
         if (actions.onTts != null) {
             ActionButton(
-                // Batch-10 G3: speaker — theta wants the classic TTS glyph for
-                // the agent-message speech trigger (reverts batch-9's
-                // GraphicEq pick). MessageTtsDialog keeps its own control
-                // icon set untouched, per spec.
-                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                // Batch-11 H2: the action-bar SPEECH CONTROL goes back to the
+                // distinct equalizer glyph (batch-9 F2's pick); the inline
+                // speak toggle in the bubble keeps the speaker, so the control
+                // and the affordance no longer share one icon.
+                // MessageTtsDialog keeps its own control icon set untouched.
+                icon = Icons.Rounded.GraphicEq,
                 contentDescRes = R.string.chat_msg_action_tts,
                 testTag = "msg_action_tts",
                 onClick = actions.onTts,
@@ -98,10 +99,10 @@ fun ChatMessageActionsRow(
         }
         if (actions.onRevert != null) {
             ActionButton(
-                // Batch-10 G2: pencil — theta explicitly picked the pencil for
-                // the revert trigger. It sits visually next to the Edit
-                // action's Icons.Outlined.Edit above; BOTH stay by request.
-                icon = Icons.Outlined.Create,
+                // Batch-11 H4: back to the Undo arrow (batch-10 G2's pencil
+                // reverted — theta wants the previous glyph again). Sits next
+                // to Edit's Edit icon; that collision is accepted per spec.
+                icon = Icons.AutoMirrored.Outlined.Undo,
                 contentDescRes = R.string.chat_msg_action_revert,
                 testTag = "msg_action_revert",
                 onClick = actions.onRevert,

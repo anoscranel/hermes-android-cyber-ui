@@ -24,11 +24,13 @@ private val AmoledTertiary = Color(0xFF999999) // tertiary accent
 
 // Batch-10 G5: hued semantic status — the same desaturated hue family as
 // MonochromeTheme's dark ramp (see MonochromeScheme.kt), so both true-black
-// presets read status identically.
-private val AmoledStatusGreen = Color(0xFF6FAF7E) // success
-private val AmoledStatusAmber = Color(0xFFAF9F6F) // warning
-private val AmoledStatusRed = Color(0xFFAF716F) // error
-private val AmoledStatusBlue = Color(0xFF6F8FAF) // info
+// presets read status identically. Batch-11 H6: brighter fills (~78%
+// lightness) for legibility against pure black; every badge pair (fill vs
+// AmoledFloor #000000) lands at >= 10.5:1.
+private val AmoledStatusGreen = Color(0xFF9BD8A8) // success
+private val AmoledStatusAmber = Color(0xFFDFCF9A) // warning
+private val AmoledStatusRed = Color(0xFFE5A9A5) // error
+private val AmoledStatusBlue = Color(0xFFA8C6E3) // info
 private val AmoledInversePrimary = Color(0xFF121212) // dark tone on the (light, fallback) inverseSurface
 
 /**
