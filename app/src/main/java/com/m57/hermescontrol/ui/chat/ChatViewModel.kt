@@ -831,6 +831,7 @@ class ChatViewModel(
     private var lastMainCompletionAt = 0L
     private var lastSubmissionKey: String? = null
     private var lastSubmissionAt = 0L
+
     /**
      * Batch-11 H5: one revert-send at a time. Set while the gateway undo and
      * the post-undo reload are in flight; a second tap on send while it is set
